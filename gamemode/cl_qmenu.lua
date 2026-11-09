@@ -1292,6 +1292,8 @@ end
 
 hook.Add("OnSpawnMenuOpen", "ElysiumQ_Open", function()
     if hook.Run("SpawnMenuOpen") == false then return true end
+    -- Меню открывается только администраторам; остальным клавиша ничего не делает
+    if not IsAdm() then return true end
     if IsOpen() then
         Close()
     else
