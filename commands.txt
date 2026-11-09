@@ -1,29 +1,32 @@
-Spawns
-	mu_spawn_add spawns - Adds a spawn at your current position
-	mu_spawn_list spawns - Lists all spawns
-	mu_spawn_remove spawns <key> - Removes the spawn with the specified key
-	mu_spawn_closest spawns - Lists the closest spawn
+GRIMOHOD — консольные команды и ConVar'ы
+========================================
 
-Loot
-	mu_loot_add <model> - Adds a loot spawn where you are looking
-	mu_loot_list - Lists all loot spawns
-	mu_loot_closest - Lists closest loot spawn
-	mu_loot_remove - Removes loot spawn with specified id
-	mu_loot_adjustpos - Sets the loot spawn position to the current position of the loot object you are looking at 
-	mu_loot_respawn - Respawns all loot
-	mu_loot_models_list - Lists all model aliases
+Серверные ConVar'ы (настраиваются в server.cfg или консоли)
+-----------------------------------------------------------
+grimohod_bots            0     Сколько ботов поддерживать на сервере (0-16)
+grimohod_minplayers      2     Минимум игроков для старта раунда
+grimohod_preptime        12    Длительность подготовки, сек
+grimohod_roundtime       300   Длительность раунда, сек
+grimohod_endtime         10    Длительность экрана итогов, сек
+grimohod_detective_min   5     Минимум игроков для появления детектива
+grimohod_loot_respawn    20    Время респавна тайника, сек
+grimohod_debug           0     Отладочный вывод ботов и навигации (0/1)
 
-Misc
-	mu_taunt <category> - Plays a random taunt sound
-	mu_jointeam <team> - Trys to join the specified team
-	mu_print_players - Prints all the players, there bystander names and steam ids
-	mu_admin_panel - Brings up an admin panel where you can view information
+Команды администратора
+----------------------
+grimohod_forcestart        Запустить подготовку немедленно (ожидание, от 2 игроков)
+grimohod_restart           Завершить текущий раунд и вернуться к ожиданию
+grimohod_bots_clear        Удалить всех ботов
+grimohod_spawn_add         Добавить точку спавна на текущей позиции
+grimohod_spawn_save        Сохранить точки спавна в data/grimohod/<карта>/spawns.txt
 
-Convars
-	mu_debug <0/1> - Shows debug information
-	mu_footstep_maxlifetime <numberOfSecond> - The number of seconds footsteps should last for, caps at 30
-	mu_bystandername_words <num> - Number of words to generate for bystander name
-	mu_murder_weight_multiplier <num> - Multiplier for the weight of the murderer chance
-	mu_scoreboard_show_admins <0/1> - Should show admins on scoreboard
-	mu_show_bystander_tks <0/1> - Should show name of killer in chat on a bystander team kill
-	mu_allow_admin_panel <0/1> - Should allow admins to use mu_admin_panel
+Клиентские ConVar'ы (у каждого игрока)
+--------------------------------------
+grimohod_halo     1     Подсветка тайников и оружия на полу (0/1)
+
+Пример server.cfg
+-----------------
+grimohod_bots 8
+grimohod_minplayers 3
+grimohod_roundtime 300
+grimohod_detective_min 5

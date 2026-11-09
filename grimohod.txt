@@ -1,0 +1,10 @@
+"Gamemode"
+{
+	"base"			"base"
+	"title"			"GRIMOHOD"
+	"maps"			"^cs_office$"
+	"menusystem"		"1"
+	"author_name"		"Morfinporop"
+	"author_url"		""
+	"info"			"Murder-режим с ролями, раундами, ботами с навигацией и стильным интерфейсом."
+}

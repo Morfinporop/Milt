@@ -1,138 +1,94 @@
-if !TeamSpawns then
-	TeamSpawns = {}
-	TeamSpawns['spawns'] = {}
+-- GRIMOHOD: точки появления игроков для карты
+
+GRIM.Spawns = GRIM.Spawns or {}
+local SP = GRIM.Spawns
+SP.Points = {}
+
+local function MapDataPath(name)
+    return "grimohod/" .. game.GetMap() .. "/" .. name
 end
 
-function GM:LoadSpawns() 
-	for listName, spawnList in pairs(TeamSpawns) do
-		local jason = file.ReadDataAndContent("murder/" .. game.GetMap() .. "/spawns/" .. listName .. ".txt")
-		if jason then
-			local tbl = util.JSONToTable(jason)
-			TeamSpawns[listName] = tbl
-		end
-	end
+-- Сначала ищем пользовательский файл в data/, затем встроенный в контенте геймода
+function GRIM.ReadMapJSON(name)
+    local path = MapDataPath(name)
+    local raw = file.Read(path, "DATA")
+    if not raw then
+        raw = file.Read(GRIM.Folder .. "/content/data/" .. path, "GAME")
+    end
+    return raw and util.JSONToTable(raw) or nil
 end
 
-function GM:SaveSpawns()
-
-	// ensure the folders are there
-	if !file.Exists("murder/","DATA") then
-		file.CreateDir("murder")
-	end
-
-	local mapName = game.GetMap()
-	if !file.Exists("murder/" .. mapName .. "/","DATA") then
-		file.CreateDir("murder/" .. mapName)
-	end
-
-	if !file.Exists("murder/" .. mapName .. "/spawns/","DATA") then
-		file.CreateDir("murder/" .. mapName .. "/spawns")
-	end
-
-	// JSON!
-	for listName, spawnList in pairs(TeamSpawns) do
-		local jason = util.TableToJSON(spawnList)
-		file.Write("murder/" .. mapName .. "/spawns/" .. listName .. ".txt", jason)
-	end
+local function ToVector(s)
+    local x, y, z = GRIM.Util.ParseTriple(s)
+    if not x then return nil end
+    return Vector(x, y, z)
 end
 
-local function getPosPrintString(pos, plyPos) 
-	return math.Round(pos.x) .. "," .. math.Round(pos.y) .. "," .. math.Round(pos.z) .. " " .. math.Round(pos:Distance(plyPos) / 12) .. "ft"
+function SP.Load()
+    SP.Points = {}
+
+    local tbl = GRIM.ReadMapJSON("spawns.txt")
+    if istable(tbl) then
+        for _, s in ipairs(GRIM.Util.OrderedValues(tbl)) do
+            local v = ToVector(s)
+            if v then table.insert(SP.Points, v) end
+        end
+    end
+
+    if #SP.Points == 0 then
+        for _, ent in ipairs(ents.FindByClass("info_player_*")) do
+            table.insert(SP.Points, ent:GetPos())
+        end
+    end
+
+    if #SP.Points == 0 then
+        ErrorNoHalt("[GRIMOHOD] Нет точек спавна для карты " .. game.GetMap() .. "\n")
+        table.insert(SP.Points, Vector(0, 0, 64))
+    end
 end
 
-concommand.Add("mu_spawn_add", function (ply, com, args, full)
-	if (!ply:IsAdmin()) then return end
+-- Точка спавна, максимально далёкая от живых игроков (среди случайных кандидатов)
+function SP.Pick(ignore)
+    local pts = SP.Points
+    local alive = {}
+    for _, ply in ipairs(player.GetAll()) do
+        if ply ~= ignore and ply:Alive() then alive[#alive + 1] = ply:GetPos() end
+    end
 
-	if #args < 1 then
-		ply:ChatPrint("Too few args (spawnList)")
-		return
-	end
+    local best, bestD = pts[math.random(#pts)], -1
+    for _ = 1, 12 do
+        local p = pts[math.random(#pts)]
+        local d = math.huge
+        for _, a in ipairs(alive) do
+            d = math.min(d, p:Distance(a))
+        end
+        if d > bestD then best, bestD = p, d end
+        if bestD > 900 then break end
+    end
+    return best
+end
 
-	local spawnList = TeamSpawns[args[1]]
-	if !spawnList then
-		ply:ChatPrint("Invalid list")
-		return
-	end
+function SP.Random()
+    return SP.Points[math.random(#SP.Points)]
+end
 
-	table.insert(spawnList, ply:GetPos())
-
-	ply:ChatPrint("Added " .. #spawnList .. ": " .. getPosPrintString(ply:GetPos(), ply:GetPos()) )
-
-	GAMEMODE:SaveSpawns()
+-- Добавить точку на текущей позиции (админ)
+concommand.Add("grimohod_spawn_add", function(ply)
+    if IsValid(ply) and not ply:IsAdmin() then return end
+    local pos = IsValid(ply) and ply:GetPos() or Vector(0, 0, 0)
+    table.insert(SP.Points, pos)
+    print(string.format("[GRIMOHOD] Добавлена точка спавна #%d (%s)", #SP.Points, tostring(pos)))
 end)
 
-concommand.Add("mu_spawn_list", function (ply, com, args, full)
-	if (!ply:IsAdmin()) then return end
-
-	if #args < 1 then
-		ply:ChatPrint("Too few args (spawnList)")
-		return
-	end
-
-	local spawnList = TeamSpawns[args[1]]
-	if !spawnList then
-		ply:ChatPrint("Invalid list")
-		return
-	end
-
-	ply:ChatPrint("SpawnList " ..  args[1])
-	for k, pos in pairs(spawnList) do
-		ply:ChatPrint(k .. ": " .. getPosPrintString(pos,ply:GetPos()) )
-	end
-end)
-
-concommand.Add("mu_spawn_closest", function (ply, com, args, full)
-	if (!ply:IsAdmin()) then return end
-
-	if #args < 1 then
-		ply:ChatPrint("Too few args (spawnList)")
-		return
-	end
-
-	local spawnList = TeamSpawns[args[1]]
-	if !spawnList then
-		ply:ChatPrint("Invalid list")
-		return
-	end
-
-	if #spawnList <= 0 then
-		ply:ChatPrint("List is empty")
-		return
-	end
-
-	local closest
-	for k, pos in pairs(spawnList) do
-		if !closest || (spawnList[closest]:Distance(ply:GetPos()) > pos:Distance(ply:GetPos())) then
-			closest = k
-		end
-	end
-
-	ply:ChatPrint(closest .. ": " .. getPosPrintString(spawnList[closest],ply:GetPos()) )
-end)
-
-concommand.Add("mu_spawn_remove", function (ply, com, args, full)
-	if (!ply:IsAdmin()) then return end
-
-	if #args < 2 then
-		ply:ChatPrint("Too few args (spawnList, key)")
-		return
-	end
-
-	local spawnList = TeamSpawns[args[1]]
-	if !spawnList then
-		ply:ChatPrint("Invalid list")
-		return
-	end
-
-	local key = tonumber(args[2]) or 0
-	if !spawnList[key] then
-		ply:ChatPrint("Invalid key, position inexists")
-		return
-	end
-
-	local pos = spawnList[key]
-	table.remove(spawnList, key)
-	ply:ChatPrint("Remove " .. key .. ": " .. getPosPrintString(pos, ply:GetPos()) )
-
-	GAMEMODE:SaveSpawns()
+-- Сохранить текущие точки в data/grimohod/<карта>/spawns.txt (админ)
+concommand.Add("grimohod_spawn_save", function(ply)
+    if IsValid(ply) and not ply:IsAdmin() then return end
+    local out = {}
+    for i, v in ipairs(SP.Points) do
+        out[tostring(i)] = string.format("[%.4f %.4f %.4f]", v.x, v.y, v.z)
+    end
+    local dir = "grimohod/" .. game.GetMap()
+    file.CreateDir(dir)
+    file.Write(dir .. "/spawns.txt", util.TableToJSON(out))
+    print("[GRIMOHOD] Точки спавна сохранены: data/" .. dir .. "/spawns.txt")
 end)

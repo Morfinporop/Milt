@@ -1,309 +1,125 @@
-local menu
+-- GRIMOHOD: таблица игроков в стиле qmenu. Роли видны только после раунда.
 
-surface.CreateFont( "ScoreboardPlayer" , {
-	font = "coolvetica",
-	size = 32,
-	weight = 500,
-	antialias = true,
-	italic = false
-})
+local UI = GRIM.UI
+local PAL = GRIM.Palette
+local S = UI.S
+local ROLE = GRIM.ROLE
+local ST = GRIM.STATE
 
-local muted = Material("icon32/muted.png")
-local admin = Material("icon32/wand.png")
+local shown = false
 
-local function addPlayerItem(self, mlist, ply, pteam)
-	local but = vgui.Create("DButton")
-	but.player = ply
-	but.ctime = CurTime()
-	but:SetTall(40)
-	but:SetText("")
-	function but:Paint(w, h)
-		local showAdmins = GetConVarNumber("mu_scoreboard_show_admins") != 0
+hook.Add("ScoreboardShow", "GRIM_ScoreboardShow", function()
+    shown = true
+    return true
+end)
 
-		if IsValid(ply) && showAdmins && ply:IsAdmin() then
-			surface.SetDrawColor(Color(150,50,50))
-		else
-			surface.SetDrawColor(team.GetColor(pteam))
-		end
-		surface.DrawRect(0, 0, w, h)
+hook.Add("ScoreboardHide", "GRIM_ScoreboardHide", function()
+    shown = false
+    return true
+end)
 
-		surface.SetDrawColor(255,255,255,10)
-		surface.DrawRect(0, 0, w, h * 0.45 )
-
-		surface.SetDrawColor(color_black)
-		surface.DrawOutlinedRect(0, 0, w, h)
-
-		if IsValid(ply) && ply:IsPlayer() then
-			local s = 0
-
-			if showAdmins && ply:IsAdmin() then
-				surface.SetMaterial(admin)
-				surface.SetDrawColor(color_white)
-				surface.DrawTexturedRect(s + 4, h / 2 - 16, 32, 32)
-				s = s + 32
-			end
-
-			if ply:IsMuted() then
-				surface.SetMaterial(muted)
-				surface.SetDrawColor(color_white)
-				surface.DrawTexturedRect(s + 4, h / 2 - 16, 32, 32)
-				s = s + 32
-			end
-
-			draw.DrawText(ply:Ping(), "ScoreboardPlayer", w - 9, 9, color_black, 2)
-			draw.DrawText(ply:Ping(), "ScoreboardPlayer", w - 10, 8, color_white, 2)
-
-			draw.DrawText(ply:Nick(), "ScoreboardPlayer", s + 11, 9, color_black, 0)
-			draw.DrawText(ply:Nick(), "ScoreboardPlayer", s + 10, 8, color_white, 0)
-
-			
-		end
-	end
-	function but:DoClick()
-		GAMEMODE:DoScoreboardActionPopup(ply)
-	end
-
-	mlist:AddItem(but)
+local function Sorted()
+    local list = {}
+    for _, p in ipairs(player.GetAll()) do
+        if IsValid(p) then list[#list + 1] = p end
+    end
+    table.sort(list, function(a, b)
+        local pa, pb = a:GetNWInt("grim_points", 0), b:GetNWInt("grim_points", 0)
+        if pa ~= pb then return pa > pb end
+        return a:Nick() < b:Nick()
+    end)
+    return list
 end
 
-function GM:DoScoreboardActionPopup(ply)
-	local actions = DermaMenu()
+local STATE_TEXT = {
+    [ST.WAIT] = "ОЖИДАНИЕ",
+    [ST.PREP] = "ПОДГОТОВКА",
+    [ST.ACTIVE] = "В ИГРЕ",
+    [ST.END] = "ИТОГИ",
+}
 
-	if ply:IsAdmin() then
-		local admin = actions:AddOption("Is an Admin")
-		admin:SetIcon("icon16/shield.png")
-	end
+local function DrawScoreboard()
+    local k = UI.Anim("grim_score", shown and 1 or 0, 6)
+    if k <= 0.01 then return end
+    local e = UI.Ease.OutCubic(k)
 
-	if ply != LocalPlayer() then
-		local t = "Замутить"
-		if ply:IsMuted() then
-			t = "Размутить"
-		end
-		local mute = actions:AddOption( t )
-		mute:SetIcon("icon16/sound_mute.png")
-		function mute:DoClick()
-			if IsValid(ply) then
-				ply:SetMuted(!ply:IsMuted())
-			end
-		end
-	end
-	
-	if IsValid(LocalPlayer()) && LocalPlayer():IsAdmin() then
-		actions:AddSpacer()
+    local list = Sorted()
+    local rowH = S(34)
+    local rows = math.min(#list, 16)
+    local w = S(920)
+    local h = S(150) + rows * rowH + S(54)
+    local x = ScrW() * 0.5 - w * 0.5
+    local y = ScrH() * 0.5 - h * 0.5 + (1 - e) * S(24)
 
-		if ply:Team() == 2 then
-			local spectate = actions:AddOption( "Переместить к " .. team.GetName(1) )
-			spectate:SetIcon( "icon16/status_busy.png" )
-			function spectate:DoClick()
-				RunConsoleCommand("mu_movetospectate", ply:EntIndex())
-			end
+    UI.Panel(x, y, w, h, UI.BG.a * k)
+    UI.Accent(x, y, w, h, 0)
 
-			local force = actions:AddOption( "Сделать маньяком в след.раунде" )
-			force:SetIcon( "icon16/delete.png" )
-			function force:DoClick()
-				RunConsoleCommand("mu_forcenextmurderer", ply:EntIndex())
-			end
+    -- Шапка
+    UI.Text("GRIMOHOD", "GRIM_Title", x + S(28), y + S(22), UI.Fade(UI.ORANGE, k))
+    local round = GetGlobalInt("grim_round", 0)
+    local st = STATE_TEXT[GRIM.GetState()] or ""
+    UI.Text("РАУНД " .. round .. "  ·  " .. st, "GRIM_Tab", x + S(28), y + S(72), UI.Fade(UI.WHITE, k))
+    UI.Text(game.GetMap() .. "  ·  " .. #list .. " игроков", "GRIM_Small", x + w - S(28), y + S(78), UI.Fade(UI.GREY, k), TEXT_ALIGN_RIGHT)
 
-			if ply:Alive() then
-				local specateThem = actions:AddOption( "Наблюдать" )
-				specateThem:SetIcon( "icon16/status_online.png" )
-				function specateThem:DoClick()
-					RunConsoleCommand("mu_spectate", ply:EntIndex())
-				end
-			end
-		end
-	end
+    -- Заголовки колонок
+    local cols = {
+        {x = S(28), t = "ИГРОК", a = TEXT_ALIGN_LEFT},
+        {x = S(470), t = "РОЛЬ", a = TEXT_ALIGN_LEFT},
+        {x = S(640), t = "ОЧКИ", a = TEXT_ALIGN_RIGHT},
+        {x = S(720), t = "УБИЙСТВА", a = TEXT_ALIGN_RIGHT},
+        {x = S(800), t = "СМЕРТИ", a = TEXT_ALIGN_RIGHT},
+        {x = S(892), t = "ПИНГ", a = TEXT_ALIGN_RIGHT},
+    }
+    local hy = y + S(116)
+    UI.Rect(x + S(18), hy + S(20), w - S(36), 1, UI.Fade(UI.WHITE, 0.08 * k))
+    for _, c in ipairs(cols) do
+        UI.Text(c.t, "GRIM_Tiny", x + c.x, hy, UI.Fade(UI.GREY, k), c.a)
+    end
 
-	actions:Open()
+    -- Строки
+    local me = LocalPlayer()
+    local ry = hy + S(30)
+    for i = 1, rows do
+        local p = list[i]
+        local alive = p:Alive() and p:Team() == GRIM.TEAM_PLAYER
+        local isMe = p == me
+
+        if isMe then
+            UI.Rect(x + S(14), ry, w - S(28), rowH - S(4), UI.Fade(UI.ORANGE, 0.14 * k))
+        end
+
+        UI.Rect(x + S(22), ry + rowH * 0.5 - S(4), S(8), S(8), alive and UI.Fade(PAL.GREEN, k) or UI.Fade(PAL.GREY, k * 0.6))
+        UI.Text(UI.Fit(p:Nick(), "GRIM_Row", S(360)), "GRIM_Row", x + S(42), ry + rowH * 0.5, UI.Fade(isMe and UI.ORANGE or UI.WHITE, k), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+
+        local shownRole = p:GetNWInt("grim_shown", 0)
+        if shownRole > 0 and GRIM.RoleInfo[shownRole] then
+            local info = GRIM.RoleInfo[shownRole]
+            UI.Icon(info.icon, x + S(484), ry + rowH * 0.5, S(18), UI.Fade(info.color, k))
+            UI.Text(info.name, "GRIM_Small", x + S(500), ry + rowH * 0.5, UI.Fade(info.color, k), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        elseif p:Team() == GRIM.TEAM_SPEC then
+            UI.Text("наблюдает", "GRIM_Small", x + S(470), ry + rowH * 0.5, UI.Fade(UI.GREY, k), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        else
+            UI.Text("—", "GRIM_Small", x + S(470), ry + rowH * 0.5, UI.Fade(UI.GREY, k), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        end
+
+        local vals = {
+            {x = cols[3].x, t = tostring(p:GetNWInt("grim_points", 0)), c = UI.ORANGE},
+            {x = cols[4].x, t = tostring(p:Frags()), c = UI.WHITE},
+            {x = cols[5].x, t = tostring(p:Deaths()), c = UI.WHITE},
+            {x = cols[6].x, t = tostring(p:Ping()), c = UI.GREY},
+        }
+        for _, v in ipairs(vals) do
+            UI.Text(v.t, "GRIM_Row", x + v.x, ry + rowH * 0.5, UI.Fade(v.c, k), TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
+        end
+        ry = ry + rowH
+    end
+
+    if #list > rows then
+        UI.Text("и ещё " .. (#list - rows), "GRIM_Small", x + w * 0.5, ry + S(4), UI.Fade(UI.GREY, k), TEXT_ALIGN_CENTER)
+    end
+
+    UI.Text("Очки копятся между раундами. Роли раскрываются в итогах.", "GRIM_Tiny",
+        x + w * 0.5, y + h - S(22), UI.Fade(UI.GREY, k * 0.8), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 end
 
-local function doPlayerItems(self, mlist, pteam)
-
-	for k, ply in pairs(team.GetPlayers(pteam)) do
-		local found = false
-
-		for t,v in pairs(mlist:GetCanvas():GetChildren()) do
-			if v.player == ply then
-				found = true
-				v.ctime = CurTime()
-			end
-		end
-
-		if !found then
-			addPlayerItem(self, mlist, ply, pteam)
-		end
-	end
-	local del = false
-
-	for t,v in pairs(mlist:GetCanvas():GetChildren()) do
-		if v.ctime != CurTime() then
-			v:Remove()
-			del = true
-		end
-	end
-	// make sure the rest of the elements are moved up
-	if del then
-		timer.Simple(0, function() mlist:GetCanvas():InvalidateLayout() end)
-	end
-end
-
-local function makeTeamList(parent, pteam)
-	local mlist
-	local chaos
-	local pnl = vgui.Create("DPanel", parent)
-	pnl:DockPadding(8,8,8,8)
-	function pnl:Paint(w, h) 
-		surface.SetDrawColor(Color(50,50,50,255))
-		surface.DrawRect(2, 2, w - 4, h - 4)
-	end
-
-	function pnl:Think()
-		if !self.RefreshWait || self.RefreshWait < CurTime() then
-			self.RefreshWait = CurTime() + 0.1
-			doPlayerItems(self, mlist, pteam)
-
-			// update chaos/control
-			if pteam == 2 then
-				-- chaos:SetText("Control: " .. GAMEMODE:GetControl())
-			else
-				-- chaos:SetText("Chaos: " .. GAMEMODE:GetChaos())
-			end
-		end
-	end
-
-	local headp = vgui.Create("DPanel", pnl)
-	headp:DockMargin(0,0,0,4)
-	-- headp:DockPadding(4,0,4,0)
-	headp:Dock(TOP)
-	function headp:Paint() end
-
-	local but = vgui.Create("DButton", headp)
-	but:Dock(RIGHT)
-	but:SetText("Присоединиться")
-	but:SetTextColor(color_white)
-	but:SetFont("Trebuchet18")
-	function but:DoClick()
-		RunConsoleCommand("mu_jointeam", pteam)
-	end
-	function but:Paint(w, h)
-		surface.SetDrawColor(team.GetColor(pteam))
-		surface.DrawRect(0, 0, w, h)
-
-		surface.SetDrawColor(255,255,255,10)
-		surface.DrawRect(0, 0, w, h * 0.45 )
-
-		surface.SetDrawColor(color_black)
-		surface.DrawOutlinedRect(0, 0, w, h)
-
-		if self:IsDown() then
-			surface.SetDrawColor(50,50,50,120)
-			surface.DrawRect(1, 1, w - 2, h - 2)
-		elseif self:IsHovered() then
-			surface.SetDrawColor(255,255,255,30)
-			surface.DrawRect(1, 1, w - 2, h - 2)
-		end
-	end
-
-	-- chaos = vgui.Create("DLabel", headp)
-	-- chaos:Dock(RIGHT)
-	-- chaos:DockMargin(0,0,10,0)
-	-- if pteam == 2 then
-	-- 	-- chaos:SetText("Control: " .. GAMEMODE:GetControl())
-	-- else
-	-- 	-- chaos:SetText("Chaos: " .. GAMEMODE:GetChaos())
-	-- end
-	-- function chaos:PerformLayout()
-	-- 	self:ApplySchemeSettings()
-	-- 	self:SizeToContentsX()
-	-- 	if ( self.m_bAutoStretchVertical ) then
-	-- 		self:SizeToContentsY()
-	-- 	end
-	-- end
-	-- chaos:SetFont("Trebuchet24")
-	-- chaos:SetTextColor(team.GetColor(pteam))
-
-	local head = vgui.Create("DLabel", headp)
-	head:SetText(team.GetName(pteam))
-	head:SetFont("Trebuchet24")
-	head:SetTextColor(team.GetColor(pteam))
-	head:Dock(FILL)
-
-
-	mlist = vgui.Create("DScrollPanel", pnl)
-	mlist:Dock(FILL)
-
-	// child positioning
-	local canvas = mlist:GetCanvas()
-	function canvas:OnChildAdded( child )
-		child:Dock( TOP )
-		child:DockMargin( 0,0,0,4 )
-	end
-
-	return pnl
-end
-
-
-function GM:ScoreboardShow()
-	if IsValid(menu) then
-		menu:SetVisible(true)
-	else
-		menu = vgui.Create("DFrame")
-		menu:SetSize(ScrW() * 0.8, ScrH() * 0.8)
-		menu:Center()
-		menu:MakePopup()
-		menu:SetKeyboardInputEnabled(false)
-		menu:SetDeleteOnClose(false)
-		menu:SetDraggable(false)
-		menu:ShowCloseButton(false)
-		menu:SetTitle("")
-		menu:DockPadding(4,4,4,4)
-		function menu:PerformLayout()
-			menu.Cops:SetWidth(self:GetWide() * 0.5)
-		end
-
-		function menu:Paint()
-			surface.SetDrawColor(Color(40,40,40,255))
-			surface.DrawRect(0, 0, menu:GetWide(), menu:GetTall())
-		end
-
-		menu.Credits = vgui.Create("DPanel", menu)
-		menu.Credits:Dock(TOP)
-		menu.Credits:DockPadding(8,6,8,0)
-		function menu.Credits:Paint() end
-
-		local name = Label(GAMEMODE.Name or "derp errors", menu.Credits)
-		name:Dock(LEFT)
-		name:SetFont("MersRadial")
-		name:SetTextColor(team.GetColor(2))
-		function name:PerformLayout()
-			surface.SetFont(self:GetFont())
-			local w,h = surface.GetTextSize(self:GetText())
-			self:SetSize(w,h)
-		end
-
-		local lab = Label("by Mechanical Mind", menu.Credits)
-		lab:Dock(RIGHT)
-		lab:SetFont("MersText1")
-		lab.PerformLayout = name.PerformLayout
-		lab:SetTextColor(team.GetColor(1))
-
-		function menu.Credits:PerformLayout()
-			surface.SetFont(name:GetFont())
-			local w,h = surface.GetTextSize(name:GetText())
-			self:SetTall(h)
-		end
-
-		menu.Cops = makeTeamList(menu, 2)
-		menu.Cops:Dock(LEFT)
-		menu.Robbers = makeTeamList(menu, 1)
-		menu.Robbers:Dock(FILL)
-	end
-end
-function GM:ScoreboardHide()
-	if IsValid(menu) then
-		menu:Close()
-	end
-end
-
-function GM:HUDDrawScoreBoard()
-end
+hook.Add("HUDPaint", "GRIM_Scoreboard", DrawScoreboard)

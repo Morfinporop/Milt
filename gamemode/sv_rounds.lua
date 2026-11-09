@@ -1,301 +1,216 @@
+-- GRIMOHOD: машина состояний раунда.
+--   WAIT   — ждём минимум игроков
+--   PREP   — подготовка: роли розданы, все на спавне, убийца ещё не может бить
+--   ACTIVE — игра: проверка победы каждые 0.2 с, таймер раунда
+--   END    — итоги, затем новый раунд
 
-util.AddNetworkString("SetRound")
-util.AddNetworkString("DeclareWinner")
+GRIM.Round = GRIM.Round or {}
+local RD = GRIM.Round
+local ST = GRIM.STATE
+local ROLE = GRIM.ROLE
+local CFG = GRIM.Config
+local NET = GRIM.Net
 
-GM.RoundStage = 0
-if GAMEMODE then
-	GM.RoundStage = GAMEMODE.RoundStage
+RD.State = ST.WAIT
+RD.Number = 0
+RD.EndAt = 0
+RD.NextCheck = 0
+RD.Murderer = nil
+RD.Detective = nil
+RD.Winner = nil
+RD.Reason = nil
+
+local function SetState(state, duration)
+    RD.State = state
+    RD.EndAt = duration and (CurTime() + duration) or 0
+    SetGlobalInt("grim_state", state)
+    SetGlobalFloat("grim_stateend", RD.EndAt)
 end
 
-function GM:GetRound()
-	return self.RoundStage or 0
+local function MinPlayers()
+    return math.max(2, GRIM.CV.MinPlayers:GetInt())
 end
 
-function GM:SetRound(round)
-	self.RoundStage = round
-	net.Start("SetRound")
-	net.WriteUInt(round, 8)
-	net.Broadcast()
-	self.RoundTime = CurTime()
+-- Удаляем тела, предметы на полу, пересоздаём карту и тайники
+function RD.Cleanup()
+    GRIM.Player.ClearBodies()
+
+    game.CleanUpMap(false, {})
+
+    for _, wep in ipairs(ents.FindByClass("weapon_*")) do
+        if IsValid(wep) and not IsValid(wep:GetOwner()) then wep:Remove() end
+    end
+
+    GRIM.Loot.Spawn()
 end
 
-function GM:NetworkRound(ply)
-	net.Start("SetRound")
-	net.WriteUInt(self.RoundStage, 8)
-	net.Send(ply)
+function RD.BeginPrep()
+    RD.Number = RD.Number + 1
+    SetGlobalInt("grim_round", RD.Number)
+    RD.Winner, RD.Reason = nil, nil
+
+    RD.Cleanup()
+
+    -- Все подключённые присоединяются к раунду
+    for _, ply in ipairs(player.GetAll()) do
+        if IsValid(ply) then
+            ply:SetTeam(GRIM.TEAM_PLAYER)
+            ply.GrimRole = ROLE.NONE
+        end
+    end
+    for _, ply in ipairs(GRIM.GetPlayers(false)) do
+        GRIM.Player.Respawn(ply)
+    end
+
+    RD.Murderer, RD.Detective = GRIM.Role.Assign()
+
+    for _, ply in ipairs(GRIM.GetPlayers(false)) do
+        GRIM.Player.GiveLoadout(ply)
+        NET.Role(ply)
+    end
+
+    SetState(ST.PREP, GRIM.CV.PrepTime:GetFloat())
+    NET.Banner(nil, "РАУНД " .. RD.Number, "Подготовка. Убийца среди вас.", "round", GRIM.Palette.ORANGE, 3)
 end
 
-// 0 not enough players
-// 1 playing
-// 2 round ended, about to restart
-function GM:RoundThink()
-	local players = team.GetPlayers(2)
-	if self.RoundStage == 0 then
-		if #players > 1 then 
-			self:StartNewRound()
-		end
-	elseif self.RoundStage == 1 then
-		if !self.RoundLastDeath || self.RoundLastDeath < CurTime() then
-			self:RoundCheckForWin()
-		end
-		if self.RoundUnFreezePlayers && self.RoundUnFreezePlayers < CurTime() then
-			self.RoundUnFreezePlayers = nil
-			for k, ply in pairs(players) do
-				if ply:Alive() then
-					ply:Freeze(false)
-					ply.Frozen = false
-				end
-			end
-		end
-		// after x minutes without a kill reveal the murderer
-		local time = self.MurdererFogTime:GetFloat()
-		time = math.max(0, time)
-
-		if time > 0 && self.MurdererLastKill && self.MurdererLastKill + time < CurTime() then
-			local murderer
-			local players = team.GetPlayers(2)
-			for k,v in pairs(players) do
-				if v:GetMurderer() then
-					murderer = v
-				end
-			end
-			if murderer && !murderer:GetMurdererRevealed() then
-				murderer:SetMurdererRevealed(true)
-				self.MurdererLastKill = nil
-			end
-		end
-
-	elseif self.RoundStage == 2 then
-		if self.RoundTime + 5 < CurTime() then
-			self:StartNewRound()
-		end
-	end
+function RD.BeginActive()
+    SetState(ST.ACTIVE, GRIM.CV.RoundTime:GetFloat())
+    RD.NextCheck = 0
+    NET.Banner(nil, "ИГРА НАЧАЛАСЬ", "Найдите убийцу, пока не поздно", "knife", GRIM.Palette.RED, 3)
 end
 
-function GM:RoundCheckForWin()
-	local murderer
-	local players = team.GetPlayers(2)
-	if #players <= 0 then 
-		self:SetRound(0)
-		return 
-	end
-	local survivors = {}
-	for k,v in pairs(players) do
-		if v:Alive() && !v:GetMurderer() then
-			table.insert(survivors, v)
-		end
-		if v:GetMurderer() then
-			murderer = v
-		end
-	end
+-- Завершение раунда: очки, раскрытие ролей, итоги
+function RD.End(winner, reason)
+    if RD.State ~= ST.ACTIVE then return end
+    RD.Winner, RD.Reason = winner, reason
 
-	// check we have a murderer
-	if !IsValid(murderer) then
-		self:EndTheRound(3, murderer)
-		return
-	end
+    local rows = {}
+    for _, ply in ipairs(GRIM.GetPlayers(false)) do
+        local role = ply.GrimRole or ROLE.NONE
+        local alive = ply:Alive()
 
-	// has the murderer killed everyone?
-	if #survivors < 1 then
-		self:EndTheRound(1, murderer)
-		return
-	end
+        if winner == ROLE.INNOCENT and alive and role ~= ROLE.MURDERER and role ~= ROLE.NONE then
+            GRIM.Player.AddPoints(ply, CFG.Points.Survive, "выжил")
+        elseif winner == ROLE.MURDERER and role == ROLE.MURDERER then
+            GRIM.Player.AddPoints(ply, CFG.Points.MurdererWin, "победа")
+        end
 
-	// is the murderer dead?
-	if !murderer:Alive() then
-		self:EndTheRound(2, murderer)
-		return
-	end
+        ply:SetNWInt("grim_shown", role)
+        rows[#rows + 1] = {
+            name = ply:Nick(),
+            role = role,
+            alive = alive,
+            kills = ply.GrimKills or 0,
+            points = ply:GetNWInt("grim_points", 0),
+        }
+    end
+    table.sort(rows, function(a, b)
+        if a.points ~= b.points then return a.points > b.points end
+        return a.name < b.name
+    end)
 
-	// keep playing.
+    NET.RoundEnd(winner or 0, reason or "", rows)
+    SetState(ST.END, GRIM.CV.EndTime:GetFloat())
 end
 
+function RD.CheckWin()
+    local players = GRIM.GetPlayers(false)
+    if #players < MinPlayers() then
+        return RD.End(0, "Недостаточно игроков")
+    end
 
-function GM:DoRoundDeaths(dead, attacker)
-	if self.RoundStage == 1 then
-		self.RoundLastDeath = CurTime() + 2
-		
-	end
+    local m = RD.Murderer
+    if not IsValid(m) or m:Team() ~= GRIM.TEAM_PLAYER or m.GrimRole ~= ROLE.MURDERER then
+        return RD.End(ROLE.INNOCENT, "Убийца покинул игру")
+    end
+    if not m:Alive() then
+        return RD.End(ROLE.INNOCENT, "Убийца уничтожен")
+    end
+
+    local innocentsAlive = 0
+    for _, p in ipairs(players) do
+        if p:Alive() and p.GrimRole ~= ROLE.MURDERER and p.GrimRole ~= ROLE.NONE then
+            innocentsAlive = innocentsAlive + 1
+        end
+    end
+    if innocentsAlive == 0 then
+        return RD.End(ROLE.MURDERER, "Все мирные мертвы")
+    end
 end
 
-// 1 Murderer wins
-// 2 Murderer loses
-// 3 Murderer rage quit
-function GM:EndTheRound(reason, murderer)
-	if self.RoundStage != 1 then return end
+-- Главный цикл состояний
+function RD.Think()
+    local now = CurTime()
+    local count = #GRIM.GetPlayers(false)
 
-	local players = team.GetPlayers(2)
-	for k, ply in pairs(players) do
-		if !ply.HasMoved && !ply.Frozen then
-			local oldTeam = ply:Team()
-			ply:SetTeam(1)
-			GAMEMODE:PlayerOnChangeTeam(ply, 1, oldTeam)
-			local ct = ChatText()
-			ct:Add(ply:Nick() .. " был перемещён в ")
-			ct:Add(team.GetName(1), team.GetColor(1))
-			ct:Add(" за долгое отсутствие", color_white)
-			ct:SendAll()
-		end
-		if ply:Alive() then
-			ply:Freeze(false)
-			ply.Frozen = false
-		end
-		ply.LastTKTime = nil
-		ply:SetMurdererRevealed(false)
-	end
-	self.RoundUnFreezePlayers = nil
+    if RD.State == ST.WAIT then
+        if count >= MinPlayers() then RD.BeginPrep() end
 
-	if reason == 3 then
-		local ct = ChatText()
-		ct:Add("Маньяк вышел")
-		if murderer then
-			ct:Add(", им был(а) ")
-			local col = murderer:GetPlayerColor()
-			ct:Add(murderer:Nick() .. ", " .. murderer:GetBystanderName(), Color(col.x * 255, col.y * 255, col.z * 255))
-		end
-		ct:SendAll()
-	elseif reason == 2 then
-		local ct = ChatText()
-		ct:Add("Невиновные выиграли! ", Color(20, 120, 255))
-		ct:Add("Маньяком был(а) ")
-		local col = murderer:GetPlayerColor()
-		ct:Add(murderer:Nick() .. ", " .. murderer:GetBystanderName(), Color(col.x * 255, col.y * 255, col.z * 255))
-		ct:SendAll()
-	elseif reason == 1 then
-		local ct = ChatText()
-		ct:Add("Маньяк выиграл! ", Color(190, 20, 20))
-		ct:Add("им был(а) ")
-		local col = murderer:GetPlayerColor()
-		ct:Add(murderer:Nick() .. ", " .. murderer:GetBystanderName(), Color(col.x * 255, col.y * 255, col.z * 255))
-		ct:SendAll()
-	end
+    elseif RD.State == ST.PREP then
+        if count < MinPlayers() then
+            SetState(ST.WAIT)
+            NET.Banner(nil, "ОЖИДАНИЕ ИГРОКОВ", "Нужно минимум " .. MinPlayers(), "person", GRIM.Palette.GREY, 3)
+        elseif now >= RD.EndAt then
+            RD.BeginActive()
+        end
 
-	net.Start("DeclareWinner")
-	net.WriteUInt(reason, 8)
-	net.WriteEntity(murderer)
+    elseif RD.State == ST.ACTIVE then
+        if now >= RD.NextCheck then
+            RD.NextCheck = now + 0.2
+            RD.CheckWin()
+        end
+        if RD.State == ST.ACTIVE and now >= RD.EndAt then
+            RD.End(ROLE.INNOCENT, "Время вышло")
+        end
 
-	for k, ply in pairs(team.GetPlayers(2)) do
-		net.WriteUInt(1, 8)
-		net.WriteEntity(ply)
-		net.WriteUInt(ply.LootCollected, 32)
-	end
-	net.WriteUInt(0, 8)
-
-	net.Broadcast()
-
-	self.MurdererLastKill = nil
-
-	hook.Call("OnEndRound")
-	self:SetRound(2)
+    elseif RD.State == ST.END then
+        if now >= RD.EndAt then
+            if count >= MinPlayers() then RD.BeginPrep() else SetState(ST.WAIT) end
+        end
+    end
 end
 
-function GM:StartNewRound()
-	local players = team.GetPlayers(2)
-	if #players <= 1 then 
-		local ct = ChatText()
-		ct:Add("Не хватает игроков для старта", Color(255, 150, 50))
-		ct:SendAll()
-		self:SetRound(0)
-		return
-	end
-
-	local ct = ChatText()
-	ct:Add("Новый раунд начался")
-	ct:SendAll()
-
-	self:SetRound(1)
-	self.RoundUnFreezePlayers = CurTime() + 10
-
-	local players = team.GetPlayers(2)
-	for k,ply in pairs(players) do
-		ply:UnSpectate()
-	end
-	game.CleanUpMap()
-	self:InitPostEntityAndMapCleanup()
-	self:ClearAllFootsteps()
-
-	local oldMurderer
-	for k,v in pairs(players) do
-		if v:GetMurderer() then
-			oldMurderer = v
-		end
-	end
-	
-	local murderer
-
-	// get the weight multiplier
-	local weightMul = self.MurdererWeight:GetFloat()
-
-	// pick a random murderer, weighted
-	local rand = WeightedRandom()
-	for k, ply in pairs(players) do
-		rand:Add(ply.MurdererChance ^ weightMul, ply)
-		ply.MurdererChance = ply.MurdererChance + 1
-	end
-	murderer = rand:Roll()
-
-	// allow admins to specify next murderer
-	if self.ForceNextMurderer && IsValid(self.ForceNextMurderer) && self.ForceNextMurderer:Team() == 2 then
-		murderer = self.ForceNextMurderer
-		self.ForceNextMurderer = nil
-	end
-
-	if IsValid(murderer) then
-		murderer:SetMurderer(true)
-	end
-	for k, ply in pairs(players) do
-		if ply != murderer then
-			ply:SetMurderer(false)
-		end
-		ply:StripWeapons()
-		ply:KillSilent()
-		ply:Spawn()
-		ply:Freeze(true)
-
-		ply.LootCollected = 0
-		ply.HasMoved = false
-		ply.Frozen = true
-		ply.LastTKTime = nil
-		ply:CalculateSpeed()
-		ply:GenerateBystanderName()
-	end
-	local noobs = table.Copy(players)
-	table.RemoveByValue(noobs, murderer)
-	local magnum = table.Random(noobs)
-	if IsValid(magnum) then
-		magnum:Give("weapon_mu_magnum")
-	end
-
-	self.MurdererLastKill = CurTime()
-
-	hook.Call("OnStartRound")
+-- Новый игрок: в ожидании — сразу в игру, иначе — наблюдать до следующего раунда
+function RD.OnJoin(ply)
+    if not IsValid(ply) then return end
+    ply.GrimRole = ROLE.NONE
+    if RD.State == ST.WAIT then
+        GRIM.Player.Respawn(ply)
+    else
+        GRIM.Player.SetSpectator(ply)
+    end
 end
 
-function GM:PlayerLeavePlay(ply)
-	if ply:HasWeapon("weapon_mu_magnum") then
-		ply:DropWeapon(ply:GetWeapon("weapon_mu_magnum"))
-	end
-
-	if self.RoundStage == 1 then
-		if ply:GetMurderer() then
-			self:EndTheRound(3, ply)
-		end
-	end
+function RD.Init()
+    SetState(ST.WAIT)
+    SetGlobalInt("grim_round", 0)
+    timer.Create("grimohod_round", 0.1, 0, RD.Think)
 end
 
-concommand.Add("mu_forcenextmurderer", function (ply, com, args)
-	if !ply:IsAdmin() then return end
-	if #args < 1 then return end
+hook.Add("PlayerInitialSpawn", "GRIM_Join", function(ply)
+    timer.Simple(0.3, function()
+        RD.OnJoin(ply)
+    end)
+end)
 
-	local ent = Entity(tonumber(args[1]) or -1)
-	if !IsValid(ent) || !ent:IsPlayer() then 
-		ply:ChatPrint("не игрок")
-		return 
-	end
+concommand.Add("grimohod_restart", function(ply)
+    if IsValid(ply) and not ply:IsAdmin() then return end
+    if RD.State == ST.ACTIVE then
+        RD.End(0, "Перезапуск администратором")
+    end
+    SetState(ST.WAIT)
+end)
 
-	GAMEMODE.ForceNextMurderer = ent
-	local ct = ChatText()
-	ct:Add(ent:Nick(), team.GetColor(2))
-	ct:Add(" будет маньяком в след.раунде")
-	ct:Send(ply)
+-- Админ: запустить подготовку немедленно (при ожидании и хотя бы 2 игроках)
+concommand.Add("grimohod_forcestart", function(ply)
+    if IsValid(ply) and not ply:IsAdmin() then return end
+    if RD.State ~= ST.WAIT then
+        if IsValid(ply) then ply:ChatPrint("[GRIMOHOD] Раунд уже идёт.") end
+        return
+    end
+    if #GRIM.GetPlayers(false) < 2 then
+        if IsValid(ply) then ply:ChatPrint("[GRIMOHOD] Нужно минимум 2 игрока.") end
+        return
+    end
+    RD.BeginPrep()
 end)
