@@ -84,3 +84,10 @@ function NET.Toast(ply, text, color)
     net.Send(ply)
 end
 
+-- Точки спавна для админа (отображение в мире)
+function NET.Spawns(targets, points)
+    net.Start("grim_spawns")
+    net.WriteUInt(#points, 16)
+    for _, v in ipairs(points) do net.WriteVector(v) end
+    net.Send(targets)
+end

@@ -209,6 +209,7 @@ function PL.OnKill(victim, killer, inflictor, role)
     end
 
     GRIM.Net.KillFeed(IsValid(killer) and killer:Nick() or "", victim:Nick(), weapon)
+    GRIM.AI.Noise(victim:GetPos(), 900)
     if not IsValid(killer) then return end
 
     killer.GrimKills = (killer.GrimKills or 0) + 1

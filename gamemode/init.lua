@@ -10,6 +10,7 @@ AddCSLuaFile("cl_fx.lua")
 AddCSLuaFile("cl_scoreboard.lua")
 AddCSLuaFile("cl_roundend.lua")
 AddCSLuaFile("cl_qmenu.lua")
+AddCSLuaFile("cl_spawns.lua")
 
 include("shared.lua")
 include("sh_util.lua")

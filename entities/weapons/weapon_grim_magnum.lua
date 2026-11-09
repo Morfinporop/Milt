@@ -42,6 +42,7 @@ function SWEP:PrimaryAttack()
     if CLIENT then return end
 
     owner:ViewPunch(Angle(-4, math.Rand(-1, 1), 0))
+    GRIM.AI.Noise(owner:GetPos(), 1400)
 
     local shoot = owner:GetShootPos()
     local aim = owner:GetAimVector()

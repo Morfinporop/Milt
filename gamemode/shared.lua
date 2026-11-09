@@ -76,6 +76,7 @@ GRIM.Config = {
 GRIM.NetNames = {
     "grim_role", "grim_banner", "grim_killfeed", "grim_hit", "grim_damage",
     "grim_roundend", "grim_coinpop", "grim_inspect", "grim_toast",
+    "grim_spawns", "grim_spawns_req",
 }
 
 -- Серверные ConVar'ы
